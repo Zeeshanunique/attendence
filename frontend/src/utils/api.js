@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API_BASE = 'http://localhost:8000/api'
+const API_BASE = ''
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -9,31 +9,31 @@ const api = axios.create({
 
 // Students
 export const registerStudent = (formData) =>
-  api.post('/register', formData, {
+  api.post('/api/register', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 
-export const getStudents = () => api.get('/students')
+export const getStudents = () => api.get('/api/students')
 
-export const deleteStudent = (id) => api.delete(`/students/${id}`)
+export const deleteStudent = (id) => api.delete(`/api/students/${id}`)
 
 // Attendance
 export const markAttendance = (imageBlob, classId = 'default') => {
   const formData = new FormData()
   formData.append('image', imageBlob, 'capture.jpg')
   formData.append('class_id', classId)
-  return api.post('/attendance', formData, {
+  return api.post('/api/attendance', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
 
 export const getAttendanceRecords = (params = {}) =>
-  api.get('/attendance', { params })
+  api.get('/api/attendance', { params })
 
-export const getAttendanceStats = () => api.get('/attendance/stats')
+export const getAttendanceStats = () => api.get('/api/attendance/stats')
 
 export const exportAttendanceCSV = async (params = {}) => {
-  const response = await api.get('/attendance/export', {
+  const response = await api.get('/api/attendance/export', {
     params,
     responseType: 'blob',
   })
