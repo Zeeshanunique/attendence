@@ -16,7 +16,7 @@ from deepface import DeepFace
 from fastapi import FastAPI, File, Form, UploadFile, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from PIL import Image
+from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -74,14 +74,15 @@ async def register_student(
 
     # Read and process image
     image_bytes = await photo.read()
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    pil_img = Image.open(io.BytesIO(image_bytes))
+    pil_img = ImageOps.exif_transpose(pil_img)  # Fix phone photo rotation
+    img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-    if img is None:
+    if img is None or img.size == 0:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
-    # Detect faces and get embeddings (DeepFace accepts BGR from OpenCV)
-    objs = DeepFace.represent(img, model_name="Facenet", enforce_detection=True, detector_backend="opencv")
+    # Detect faces and get embeddings (ssd detector is more reliable than opencv)
+    objs = DeepFace.represent(img, model_name="Facenet", enforce_detection=True, detector_backend="ssd")
     if len(objs) == 0:
         raise HTTPException(status_code=400, detail="No face detected in the photo. Please upload a clear face photo.")
 
@@ -156,7 +157,7 @@ async def mark_attendance(
         raise HTTPException(status_code=400, detail="Invalid image")
 
     # Detect faces and get embeddings
-    objs = DeepFace.represent(img, model_name="Facenet", enforce_detection=False, detector_backend="opencv")
+    objs = DeepFace.represent(img, model_name="Facenet", enforce_detection=False, detector_backend="ssd")
     if len(objs) == 0:
         return {"status": "no_face", "message": "No face detected in frame"}
 
