@@ -18,14 +18,17 @@ export default function Login() {
     setError('')
     setLoading(true)
 
-    // Simple demo auth — in production, this would call the backend
-    await new Promise((r) => setTimeout(r, 800))
-
-    if (username && password) {
-      login({ username, role })
-      navigate('/dashboard')
-    } else {
+    if (!username || !password) {
       setError('Please enter credentials')
+      setLoading(false)
+      return
+    }
+
+    try {
+      await login({ username, password, role })
+      navigate(role === 'student' ? '/reports' : '/dashboard')
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Login failed')
     }
     setLoading(false)
   }
@@ -94,7 +97,7 @@ export default function Login() {
           <div className="input-group">
             <label>Role</label>
             <div style={styles.roleToggle}>
-              {['faculty', 'admin'].map((r) => (
+              {['student', 'faculty', 'admin'].map((r) => (
                 <button
                   key={r}
                   type="button"
@@ -128,7 +131,7 @@ export default function Login() {
         </form>
 
         <p style={styles.hint}>
-          Demo: enter any username/password to sign in
+          Use your assigned username, password, and role to sign in
         </p>
       </div>
 
@@ -245,7 +248,7 @@ const styles = {
   },
   roleOption: {
     flex: 1,
-    padding: '8px 16px',
+    padding: '8px 12px',
     borderRadius: 6,
     background: 'transparent',
     color: 'var(--text-muted)',

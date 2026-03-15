@@ -19,6 +19,9 @@ const navItems = [
 export default function Sidebar() {
   const { user, logout } = useAuth()
   const location = useLocation()
+  const visibleNavItems = user?.role === 'student'
+    ? navItems.filter((item) => item.path === '/reports')
+    : navItems
 
   return (
     <aside style={styles.sidebar}>
@@ -44,7 +47,7 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav style={styles.nav}>
-        {navItems.map(({ path, label, icon: Icon }) => {
+        {visibleNavItems.map(({ path, label, icon: Icon }) => {
           const isActive = location.pathname === path
           return (
             <NavLink

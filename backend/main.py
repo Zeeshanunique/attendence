@@ -4,23 +4,25 @@ FastAPI + DeepFace + SQLite
 """
 
 import io
-import json
 import os
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 import cv2
 import numpy as np
 from deepface import DeepFace
+import jwt
 from fastapi import FastAPI, File, Form, UploadFile, Depends, HTTPException, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from passlib.context import CryptContext
 from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from models.database import get_db, Student, AttendanceRecord
+from models.database import get_db, Student, AttendanceRecord, User, ensure_schema, SessionLocal
 
 app = FastAPI(title="FaceSync API", version="1.0.0")
 
@@ -42,9 +44,85 @@ MATCH_THRESHOLD = 0.4  # Facenet default
 # Track which students already marked today per class to prevent duplicates
 _session_tracker: dict[str, set[str]] = {}
 
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev_change_this_secret")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
+
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+bearer_scheme = HTTPBearer(auto_error=False)
+
 
 def get_session_key(class_id: str) -> str:
     return f"{date.today().isoformat()}_{class_id}"
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, password_hash: str) -> bool:
+    return pwd_context.verify(plain_password, password_hash)
+
+
+def create_access_token(payload: dict) -> str:
+    to_encode = payload.copy()
+    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+):
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+        )
+        return payload
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
+def require_roles(*roles: str):
+    def checker(current_user: dict = Depends(get_current_user)):
+        role = current_user.get("role")
+        if role not in roles:
+            raise HTTPException(status_code=403, detail="You are not authorized for this action")
+        return current_user
+
+    return checker
+
+
+def bootstrap_default_users(db: Session):
+    if db.query(User).count() > 0:
+        return
+
+    admin_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
+    admin_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
+    faculty_username = os.getenv("DEFAULT_FACULTY_USERNAME", "faculty")
+    faculty_password = os.getenv("DEFAULT_FACULTY_PASSWORD", "faculty123")
+
+    db.add(
+        User(
+            username=admin_username,
+            hashed_password=hash_password(admin_password),
+            password_hash=hash_password(admin_password),
+            role="admin",
+        )
+    )
+    db.add(
+        User(
+            username=faculty_username,
+            hashed_password=hash_password(faculty_password),
+            password_hash=hash_password(faculty_password),
+            role="faculty",
+        )
+    )
+    db.commit()
 
 
 # ─────────────────────────────────────────
@@ -57,6 +135,89 @@ def root():
 
 
 # ─────────────────────────────────────────
+# Auth
+# ─────────────────────────────────────────
+
+@app.on_event("startup")
+def startup():
+    ensure_schema()
+    db = SessionLocal()
+    try:
+        bootstrap_default_users(db)
+    finally:
+        db.close()
+
+
+@app.post("/api/auth/login")
+def login(payload: dict, db: Session = Depends(get_db)):
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    role = (payload.get("role") or "").strip().lower()
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password are required")
+
+    if role == "student":
+        student = db.query(Student).filter(Student.roll_number == username).first()
+        if not student or not student.login_password_hash:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not verify_password(password, student.login_password_hash):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        token = create_access_token(
+            {
+                "sub": student.id,
+                "username": student.roll_number,
+                "name": student.name,
+                "role": "student",
+                "student_id": student.id,
+            }
+        )
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "username": student.roll_number,
+                "name": student.name,
+                "role": "student",
+                "student_id": student.id,
+            },
+        }
+
+    user_query = db.query(User).filter(User.username == username)
+    if role:
+        user_query = user_query.filter(User.role == role)
+    user = user_query.first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    stored_hash = user.password_hash or user.hashed_password
+    if not stored_hash or not verify_password(password, stored_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token(
+        {
+            "sub": user.id,
+            "username": user.username,
+            "role": user.role,
+        }
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "username": user.username,
+            "role": user.role,
+        },
+    }
+
+
+@app.get("/api/auth/me")
+def me(current_user: dict = Depends(get_current_user)):
+    return {"user": current_user}
+
+
+# ─────────────────────────────────────────
 # Student Registration
 # ─────────────────────────────────────────
 
@@ -64,7 +225,9 @@ def root():
 async def register_student(
     name: str = Form(...),
     roll_number: str = Form(...),
+    login_password: str = Form(...),
     photo: UploadFile = File(...),
+    _: dict = Depends(require_roles("admin", "faculty")),
     db: Session = Depends(get_db),
 ):
     # Check duplicate roll number
@@ -100,6 +263,7 @@ async def register_student(
     student = Student(
         name=name,
         roll_number=roll_number,
+        login_password_hash=hash_password(login_password),
         photo_path=photo_filename,
     )
     student.set_embedding(embedding)
@@ -116,13 +280,20 @@ async def register_student(
 
 
 @app.get("/api/students")
-def list_students(db: Session = Depends(get_db)):
+def list_students(
+    _: dict = Depends(require_roles("admin", "faculty")),
+    db: Session = Depends(get_db),
+):
     students = db.query(Student).order_by(Student.created_at.desc()).all()
     return [s.to_dict() for s in students]
 
 
 @app.delete("/api/students/{student_id}")
-def remove_student(student_id: str, db: Session = Depends(get_db)):
+def remove_student(
+    student_id: str,
+    _: dict = Depends(require_roles("admin", "faculty")),
+    db: Session = Depends(get_db),
+):
     student = db.query(Student).filter(Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -146,6 +317,7 @@ def remove_student(student_id: str, db: Session = Depends(get_db)):
 async def mark_attendance(
     image: UploadFile = File(...),
     class_id: str = Form("default"),
+    _: dict = Depends(require_roles("admin", "faculty")),
     db: Session = Depends(get_db),
 ):
     # Read image
@@ -248,9 +420,13 @@ def get_attendance_records(
     date_filter: Optional[str] = Query(None, alias="date"),
     class_id: Optional[str] = Query(None),
     limit: int = Query(100),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(AttendanceRecord)
+
+    if current_user.get("role") == "student":
+        query = query.filter(AttendanceRecord.student_id == current_user.get("student_id"))
 
     if date_filter:
         try:
@@ -267,7 +443,47 @@ def get_attendance_records(
 
 
 @app.get("/api/attendance/stats")
-def get_attendance_stats(db: Session = Depends(get_db)):
+def get_attendance_stats(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.get("role") == "student":
+        student_id = current_user.get("student_id")
+        today = date.today()
+        present_today = (
+            db.query(AttendanceRecord)
+            .filter(
+                AttendanceRecord.student_id == student_id,
+                func.date(AttendanceRecord.timestamp) == today,
+            )
+            .distinct(func.date(AttendanceRecord.timestamp))
+            .count()
+        )
+        any_class_today = (
+            db.query(AttendanceRecord)
+            .filter(func.date(AttendanceRecord.timestamp) == today)
+            .count()
+        ) > 0
+        total_classes = (
+            db.query(func.count(func.distinct(func.date(AttendanceRecord.timestamp))))
+            .scalar()
+        ) or 0
+        attended = (
+            db.query(AttendanceRecord)
+            .filter(AttendanceRecord.student_id == student_id)
+            .distinct(func.date(AttendanceRecord.timestamp))
+            .count()
+        )
+        absent_today = 1 if any_class_today and present_today == 0 else 0
+        avg_attendance = round((attended / total_classes * 100) if total_classes > 0 else 0, 1)
+        return {
+            "totalStudents": 1,
+            "presentToday": present_today,
+            "absentToday": absent_today,
+            "atRisk": 1 if avg_attendance < 75 else 0,
+            "avgAttendance": avg_attendance,
+        }
+
     total_students = db.query(Student).count()
 
     today = date.today()
@@ -313,9 +529,13 @@ def get_attendance_stats(db: Session = Depends(get_db)):
 def export_attendance_csv(
     date_filter: Optional[str] = Query(None, alias="date"),
     class_id: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(AttendanceRecord)
+
+    if current_user.get("role") == "student":
+        query = query.filter(AttendanceRecord.student_id == current_user.get("student_id"))
 
     if date_filter:
         try:

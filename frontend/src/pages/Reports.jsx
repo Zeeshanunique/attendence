@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Download,
   Search,
@@ -12,33 +12,9 @@ import {
 } from 'lucide-react'
 import { getAttendanceRecords, exportAttendanceCSV } from '../utils/api'
 
-// Demo data for when backend is not connected
-const demoRecords = [
-  { id: 1, student_name: 'Amit Kumar', roll_number: 'CS2021045', timestamp: '2026-02-14T10:02:00', confidence: 0.96, class_id: 'CS-301' },
-  { id: 2, student_name: 'Sara Khan', roll_number: 'CS2021032', timestamp: '2026-02-14T10:02:30', confidence: 0.91, class_id: 'CS-301' },
-  { id: 3, student_name: 'Vikram Singh', roll_number: 'CS2021018', timestamp: '2026-02-14T10:03:00', confidence: 0.88, class_id: 'CS-301' },
-  { id: 4, student_name: 'Deepa Nair', roll_number: 'CS2021051', timestamp: '2026-02-14T10:03:15', confidence: 0.94, class_id: 'CS-301' },
-  { id: 5, student_name: 'Rohit Das', roll_number: 'CS2021027', timestamp: '2026-02-14T10:04:00', confidence: 0.82, class_id: 'CS-301' },
-  { id: 6, student_name: 'Priya Patel', roll_number: 'CS2021039', timestamp: '2026-02-13T09:15:00', confidence: 0.93, class_id: 'CS-301' },
-  { id: 7, student_name: 'Rahul Sharma', roll_number: 'CS2021042', timestamp: '2026-02-13T09:16:00', confidence: 0.89, class_id: 'CS-302' },
-  { id: 8, student_name: 'Ananya Joshi', roll_number: 'CS2021014', timestamp: '2026-02-13T09:17:00', confidence: 0.97, class_id: 'CS-302' },
-  { id: 9, student_name: 'Karthik Rajan', roll_number: 'CS2021008', timestamp: '2026-02-12T11:02:00', confidence: 0.85, class_id: 'CS-301' },
-  { id: 10, student_name: 'Meera Iyer', roll_number: 'CS2021055', timestamp: '2026-02-12T11:03:00', confidence: 0.92, class_id: 'CS-301' },
-]
-
-const demoStudentStats = [
-  { name: 'Amit Kumar', roll: 'CS2021045', total: 20, present: 19, percentage: 95 },
-  { name: 'Sara Khan', roll: 'CS2021032', total: 20, present: 18, percentage: 90 },
-  { name: 'Vikram Singh', roll: 'CS2021018', total: 20, present: 17, percentage: 85 },
-  { name: 'Deepa Nair', roll: 'CS2021051', total: 20, present: 16, percentage: 80 },
-  { name: 'Rohit Das', roll: 'CS2021027', total: 20, present: 15, percentage: 75 },
-  { name: 'Priya Patel', roll: 'CS2021039', total: 20, present: 13, percentage: 65 },
-  { name: 'Rahul Sharma', roll: 'CS2021042', total: 20, present: 12, percentage: 60 },
-]
-
 export default function Reports() {
   const [tab, setTab] = useState('records') // 'records' | 'students'
-  const [records, setRecords] = useState(demoRecords)
+  const [records, setRecords] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [dateFilter, setDateFilter] = useState('')
   const [classFilter, setClassFilter] = useState('')
@@ -52,9 +28,9 @@ export default function Reports() {
           date: dateFilter || undefined,
           class_id: classFilter || undefined,
         })
-        if (res.data?.length > 0) setRecords(res.data)
+        setRecords(res.data || [])
       } catch {
-        // Use demo data
+        setRecords([])
       } finally {
         setLoading(false)
       }
@@ -71,7 +47,32 @@ export default function Reports() {
     )
   })
 
-  const filteredStudents = demoStudentStats.filter((s) => {
+  const studentSummary = useMemo(() => {
+    const byStudent = new Map()
+    const classDates = new Set(records.map((r) => new Date(r.timestamp).toDateString()))
+    const totalClasses = classDates.size
+
+    records.forEach((r) => {
+      const key = r.roll_number || r.student_id || r.student_name
+      if (!key) return
+      if (!byStudent.has(key)) {
+        byStudent.set(key, {
+          name: r.student_name || 'Unknown',
+          roll: r.roll_number || '-',
+          presentDates: new Set(),
+        })
+      }
+      byStudent.get(key).presentDates.add(new Date(r.timestamp).toDateString())
+    })
+
+    return Array.from(byStudent.values()).map((s) => {
+      const present = s.presentDates.size
+      const percentage = totalClasses > 0 ? Math.round((present / totalClasses) * 100) : 0
+      return { name: s.name, roll: s.roll, total: totalClasses, present, percentage }
+    })
+  }, [records])
+
+  const filteredStudents = studentSummary.filter((s) => {
     const q = searchQuery.toLowerCase()
     return !q || s.name.toLowerCase().includes(q) || s.roll.toLowerCase().includes(q)
   })
@@ -80,7 +81,6 @@ export default function Reports() {
     try {
       await exportAttendanceCSV({ date: dateFilter, class_id: classFilter })
     } catch {
-      // Generate CSV from demo data
       const csv = [
         'Name,Roll Number,Timestamp,Confidence,Class',
         ...filteredRecords.map(
@@ -275,7 +275,9 @@ export default function Reports() {
             </table>
             {filteredRecords.length === 0 && (
               <div style={styles.noResults}>
-                <p style={{ color: 'var(--text-muted)' }}>No records found</p>
+                <p style={{ color: 'var(--text-muted)' }}>
+                  {loading ? 'Loading records...' : 'No records found'}
+                </p>
               </div>
             )}
           </div>
@@ -340,6 +342,13 @@ export default function Reports() {
                 ))}
               </tbody>
             </table>
+            {filteredStudents.length === 0 && (
+              <div style={styles.noResults}>
+                <p style={{ color: 'var(--text-muted)' }}>
+                  {loading ? 'Loading student summary...' : 'No student summary available'}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

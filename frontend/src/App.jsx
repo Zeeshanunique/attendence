@@ -8,17 +8,28 @@ import Register from './pages/Register'
 import Reports from './pages/Reports'
 import './App.css'
 
-function ProtectedLayout() {
+function ProtectedLayout({ user }) {
+  const isStudent = user?.role === 'student'
+
   return (
     <div className="app-layout">
       <Sidebar />
       <main className="main-content">
         <Routes>
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/capture" element={<Capture />} />
-          <Route path="/register" element={<Register />} />
+          <Route
+            path="/dashboard"
+            element={isStudent ? <Navigate to="/reports" replace /> : <Dashboard />}
+          />
+          <Route
+            path="/capture"
+            element={isStudent ? <Navigate to="/reports" replace /> : <Capture />}
+          />
+          <Route
+            path="/register"
+            element={isStudent ? <Navigate to="/reports" replace /> : <Register />}
+          />
           <Route path="/reports" element={<Reports />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to={isStudent ? '/reports' : '/dashboard'} replace />} />
         </Routes>
       </main>
     </div>
@@ -32,11 +43,11 @@ export default function App() {
     <Routes>
       <Route
         path="/login"
-        element={user ? <Navigate to="/dashboard" replace /> : <Login />}
+        element={user ? <Navigate to={user.role === 'student' ? '/reports' : '/dashboard'} replace /> : <Login />}
       />
       <Route
         path="/*"
-        element={user ? <ProtectedLayout /> : <Navigate to="/login" replace />}
+        element={user ? <ProtectedLayout user={user} /> : <Navigate to="/login" replace />}
       />
     </Routes>
   )

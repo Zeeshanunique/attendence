@@ -7,6 +7,18 @@ const api = axios.create({
   timeout: 30000,
 })
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('facesync_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// Auth
+export const loginUser = (payload) => api.post('/auth/login', payload)
+export const getCurrentUser = () => api.get('/auth/me')
+
 // Students
 export const registerStudent = (formData) =>
   api.post('/register', formData, {

@@ -17,6 +17,7 @@ export default function Register() {
   const fileInputRef = useRef(null)
   const [name, setName] = useState('')
   const [rollNumber, setRollNumber] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
   const [photoMode, setPhotoMode] = useState('webcam') // 'webcam' | 'upload'
   const [capturedImage, setCapturedImage] = useState(null)
   const [uploadedFile, setUploadedFile] = useState(null)
@@ -59,7 +60,7 @@ export default function Register() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!name || !rollNumber) {
+    if (!name || !rollNumber || !loginPassword) {
       setMessage({ type: 'danger', text: 'Please fill in all fields' })
       return
     }
@@ -82,12 +83,14 @@ export default function Register() {
       const formData = new FormData()
       formData.append('name', name)
       formData.append('roll_number', rollNumber)
+      formData.append('login_password', loginPassword)
       formData.append('photo', photoBlob, 'student.jpg')
 
       await registerStudent(formData)
       setMessage({ type: 'success', text: `${name} registered successfully!` })
       setName('')
       setRollNumber('')
+      setLoginPassword('')
       setCapturedImage(null)
       setUploadedFile(null)
       loadStudents()
@@ -165,6 +168,17 @@ export default function Register() {
                 placeholder="e.g., CS2021045"
                 value={rollNumber}
                 onChange={(e) => setRollNumber(e.target.value)}
+              />
+            </div>
+
+            <div className="input-group">
+              <label>Student Login Password</label>
+              <input
+                type="password"
+                className="input-field"
+                placeholder="Set a password for this student"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
               />
             </div>
 

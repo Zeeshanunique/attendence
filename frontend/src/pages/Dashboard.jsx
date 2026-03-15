@@ -25,63 +25,123 @@ import {
   Area,
   AreaChart,
 } from 'recharts'
-import { getAttendanceStats, getStudents } from '../utils/api'
-
-const COLORS = ['#4f6ef7', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6']
-
-// Demo data — replaced by real API data when backend is running
-const demoWeekly = [
-  { day: 'Mon', present: 42, absent: 6 },
-  { day: 'Tue', present: 38, absent: 10 },
-  { day: 'Wed', present: 45, absent: 3 },
-  { day: 'Thu', present: 40, absent: 8 },
-  { day: 'Fri', present: 44, absent: 4 },
-]
-
-const demoTrend = [
-  { week: 'W1', rate: 85 },
-  { week: 'W2', rate: 88 },
-  { week: 'W3', rate: 82 },
-  { week: 'W4', rate: 91 },
-  { week: 'W5', rate: 89 },
-  { week: 'W6', rate: 93 },
-]
-
-const demoRisk = [
-  { name: 'Rahul Sharma', roll: 'CS2021045', attendance: 62, trend: 'down' },
-  { name: 'Priya Patel', roll: 'CS2021032', attendance: 68, trend: 'down' },
-  { name: 'Arjun Mehta', roll: 'CS2021018', attendance: 71, trend: 'up' },
-  { name: 'Sneha Reddy', roll: 'CS2021051', attendance: 73, trend: 'down' },
-]
-
-const demoRecentCaptures = [
-  { name: 'Amit Kumar', time: '10:02 AM', confidence: 0.96 },
-  { name: 'Sara Khan', time: '10:02 AM', confidence: 0.91 },
-  { name: 'Vikram Singh', time: '10:03 AM', confidence: 0.88 },
-  { name: 'Deepa Nair', time: '10:03 AM', confidence: 0.94 },
-  { name: 'Rohit Das', time: '10:04 AM', confidence: 0.82 },
-]
+import { getAttendanceStats, getStudents, getAttendanceRecords } from '../utils/api'
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
-    totalStudents: 48,
-    presentToday: 42,
-    absentToday: 6,
-    atRisk: 4,
-    avgAttendance: 87.5,
+    totalStudents: 0,
+    presentToday: 0,
+    absentToday: 0,
+    atRisk: 0,
+    avgAttendance: 0,
   })
   const [loading, setLoading] = useState(true)
+  const [weeklyData, setWeeklyData] = useState([])
+  const [trendData, setTrendData] = useState([])
+  const [riskData, setRiskData] = useState([])
+  const [recentCaptures, setRecentCaptures] = useState([])
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [statsRes, studentsRes] = await Promise.all([
+        const [statsRes, studentsRes, recordsRes] = await Promise.allSettled([
           getAttendanceStats(),
           getStudents(),
+          getAttendanceRecords({ limit: 500 }),
         ])
-        if (statsRes.data) setStats(statsRes.data)
+
+        const statsData = statsRes.status === 'fulfilled' ? (statsRes.value.data || {}) : {}
+        if (Object.keys(statsData).length > 0) {
+          setStats(statsData)
+        }
+
+        const students =
+          studentsRes.status === 'fulfilled' ? (studentsRes.value.data || []) : []
+        const records =
+          recordsRes.status === 'fulfilled' ? (recordsRes.value.data || []) : []
+
+        const totalStudents = Number(statsData.totalStudents || students.length || 0)
+        const recordsByDate = {}
+        records.forEach((r) => {
+          if (!r?.timestamp) return
+          const dayKey = new Date(r.timestamp).toISOString().slice(0, 10)
+          if (!recordsByDate[dayKey]) recordsByDate[dayKey] = new Set()
+          recordsByDate[dayKey].add(r.student_id || r.roll_number || r.student_name)
+        })
+
+        const last7Days = [...Array(7)].map((_, idx) => {
+          const d = new Date()
+          d.setDate(d.getDate() - (6 - idx))
+          const dayKey = d.toISOString().slice(0, 10)
+          const present = recordsByDate[dayKey]?.size || 0
+          return {
+            key: dayKey,
+            day: d.toLocaleDateString('en-US', { weekday: 'short' }),
+            present,
+            absent: Math.max(totalStudents - present, 0),
+          }
+        })
+
+        setWeeklyData(last7Days)
+        setTrendData(
+          last7Days.map((d, i) => ({
+            week: `D${i + 1}`,
+            rate:
+              totalStudents > 0
+                ? Number(((d.present / totalStudents) * 100).toFixed(1))
+                : 0,
+          }))
+        )
+
+        const recent = [...records]
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+          .slice(0, 5)
+          .map((r) => ({
+            name: r.student_name || 'Unknown',
+            time: r.timestamp
+              ? new Date(r.timestamp).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : '--:--',
+            confidence: Number(r.confidence || 0),
+          }))
+        setRecentCaptures(recent)
+
+        const totalClassDays = Object.keys(recordsByDate).length
+        const presentByStudent = {}
+        records.forEach((r) => {
+          const studentKey = r.student_id || r.roll_number || r.student_name
+          if (!studentKey || !r.timestamp) return
+          if (!presentByStudent[studentKey]) presentByStudent[studentKey] = new Set()
+          presentByStudent[studentKey].add(new Date(r.timestamp).toISOString().slice(0, 10))
+        })
+
+        const risk = students
+          .map((s) => {
+            const key = s.id || s.roll_number || s.name
+            const attended = presentByStudent[key]?.size || 0
+            const attendance =
+              totalClassDays > 0
+                ? Number(((attended / totalClassDays) * 100).toFixed(0))
+                : 0
+            return {
+              name: s.name,
+              roll: s.roll_number,
+              attendance,
+              trend: attendance < 75 ? 'down' : 'up',
+            }
+          })
+          .filter((s) => s.attendance < 75)
+          .sort((a, b) => a.attendance - b.attendance)
+          .slice(0, 4)
+
+        setRiskData(risk)
       } catch {
-        // Use demo data
+        setWeeklyData([])
+        setTrendData([])
+        setRiskData([])
+        setRecentCaptures([])
       } finally {
         setLoading(false)
       }
@@ -93,6 +153,10 @@ export default function Dashboard() {
     { name: 'Present', value: stats.presentToday },
     { name: 'Absent', value: stats.absentToday },
   ]
+  const trendDelta =
+    trendData.length >= 2
+      ? Number((trendData[trendData.length - 1].rate - trendData[trendData.length - 2].rate).toFixed(1))
+      : 0
 
   return (
     <div className="page-container">
@@ -186,7 +250,7 @@ export default function Dashboard() {
             <span className="badge badge-accent">This Week</span>
           </div>
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={demoWeekly} barGap={4}>
+            <BarChart data={weeklyData} barGap={4}>
               <CartesianGrid
                 strokeDasharray="3 3"
                 stroke="var(--ink-border)"
@@ -226,6 +290,9 @@ export default function Dashboard() {
               />
             </BarChart>
           </ResponsiveContainer>
+          {weeklyData.length === 0 && !loading && (
+            <p style={styles.emptyText}>No attendance trend data yet.</p>
+          )}
         </div>
 
         {/* Attendance pie */}
@@ -315,11 +382,11 @@ export default function Dashboard() {
               }}
             >
               <TrendingUp size={14} />
-              <span>+5.2%</span>
+              <span>{trendDelta >= 0 ? `+${trendDelta}%` : `${trendDelta}%`}</span>
             </div>
           </div>
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={demoTrend}>
+            <AreaChart data={trendData}>
               <defs>
                 <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop
@@ -369,6 +436,9 @@ export default function Dashboard() {
               />
             </AreaChart>
           </ResponsiveContainer>
+          {trendData.length === 0 && !loading && (
+            <p style={styles.emptyText}>No trend data yet.</p>
+          )}
         </div>
 
         {/* Risk list */}
@@ -381,7 +451,10 @@ export default function Dashboard() {
             <span className="badge badge-warning">Below 75%</span>
           </div>
           <div style={styles.riskList}>
-            {demoRisk.map((student) => (
+            {riskData.length === 0 && !loading && (
+              <p style={styles.emptyText}>No at-risk students yet.</p>
+            )}
+            {riskData.map((student) => (
               <div key={student.roll} style={styles.riskItem}>
                 <div>
                   <div style={styles.riskName}>{student.name}</div>
@@ -425,7 +498,10 @@ export default function Dashboard() {
             </div>
           </div>
           <div style={styles.captureList}>
-            {demoRecentCaptures.map((cap, i) => (
+            {recentCaptures.length === 0 && !loading && (
+              <p style={styles.emptyText}>No recent captures yet.</p>
+            )}
+            {recentCaptures.map((cap, i) => (
               <div key={i} style={styles.captureItem}>
                 <div style={styles.captureAvatar}>
                   {cap.name[0]}
@@ -560,5 +636,10 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: 4,
+  },
+  emptyText: {
+    marginTop: 12,
+    fontSize: '0.8rem',
+    color: 'var(--text-muted)',
   },
 }
