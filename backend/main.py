@@ -26,11 +26,11 @@ from models.database import get_db, Student, AttendanceRecord, User, ensure_sche
 
 app = FastAPI(title="FaceSync API", version="1.0.0")
 
-# CORS — allow the React dev server
+# CORS — allow all origins for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -245,8 +245,22 @@ async def register_student(
         raise HTTPException(status_code=400, detail="Invalid image file")
 
     # Detect faces and get embeddings (ssd detector is more reliable than opencv)
-    objs = DeepFace.represent(img, model_name="Facenet", enforce_detection=True, detector_backend="ssd")
+    try:
+        objs = DeepFace.represent(img, model_name="Facenet", enforce_detection=True, detector_backend="ssd")
+    except Exception as exc:
+        # DeepFace raises FaceNotDetected when no face is found
+        from deepface.modules.exceptions import FaceNotDetected
+
+        if isinstance(exc, FaceNotDetected):
+            raise HTTPException(
+                status_code=400,
+                detail="No face detected in the photo. Please upload a clear face photo.",
+            )
+        # propagate other errors upstream
+        raise
+
     if len(objs) == 0:
+        # should not normally happen when enforce_detection=True, but guard anyway
         raise HTTPException(status_code=400, detail="No face detected in the photo. Please upload a clear face photo.")
 
     if len(objs) > 1:
